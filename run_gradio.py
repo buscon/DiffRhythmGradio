@@ -31,6 +31,8 @@ def inference(
     start_time,
     pred_frames,
     batch_infer_num,
+    steps=32,
+    cfg_strength=4.0,
     chunked=False,
 ):
     from einops import rearrange
@@ -42,8 +44,8 @@ def inference(
         duration=duration,
         style_prompt=style_prompt,
         negative_style_prompt=negative_style_prompt,
-        steps=32,
-        cfg_strength=4.0,
+        steps=steps,
+        cfg_strength=cfg_strength,
         start_time=start_time,
         latent_pred_segments=pred_frames,
         batch_infer_num=batch_infer_num
@@ -77,7 +79,14 @@ os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 print("Loading models...")
 
-selected_repo = "ASLP-lab/DiffRhythm-1_2"
+model_repo_options = [
+    "ASLP-lab/DiffRhythm-1_2",
+    "ASLP-lab/DiffRhythm-base",
+    "ASLP-lab/DiffRhythm-full",
+    "ASLP-lab/DiffRhythm-vae",
+]
+
+selected_repo = model_repo_options[0]
 device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
 cfm, tokenizer, muq, vae = prepare_model(max_frames=2048, device=device, repo_id=selected_repo)
 print("Models loaded.")
@@ -87,7 +96,7 @@ def simulate_fast_output(label="prompt"):
     shutil.copy(DUMMY_WAV, dummy_path)
     return dummy_path, dummy_path, "✅ Fast mode: demo file returned."
 
-def generate(prompt_text=None, ref_audio_path=None, duration=95, ref_style=1.0, chunked=False, fast_mode=False, sample_rate=24000, repo_id="ASLP-lab/DiffRhythm-1_2"):
+def generate(prompt_text=None, ref_audio_path=None, duration=95, chunked=False, fast_mode=False, sample_rate=24000, repo_id="ASLP-lab/DiffRhythm-1_2", steps=32, cfg_strength=4.0, batch_size=1):
     global cfm, tokenizer, muq, vae, selected_repo
     if fast_mode:
         return simulate_fast_output("prompt" if prompt_text else "ref")
@@ -124,8 +133,10 @@ def generate(prompt_text=None, ref_audio_path=None, duration=95, ref_style=1.0, 
             negative_style_prompt=negative_style_prompt,
             start_time=start_time,
             pred_frames=pred_frames,
+            steps=steps,
+            cfg_strength=cfg_strength,
             chunked=chunked,
-            batch_infer_num=1,
+            batch_infer_num=batch_size,
         )
 
         selected = random.sample(outputs, 1)[0]
@@ -141,13 +152,15 @@ def generate(prompt_text=None, ref_audio_path=None, duration=95, ref_style=1.0, 
         return None, None, f"❌ Error: {str(e)}"
 
 with gr.Blocks() as demo:
-    gr.Markdown("# 🎵 DiffRhythm Music Generator (v1.2 default)")
+    gr.Markdown("# 🎵 DiffRhythm Music Generator")
 
     with gr.Row():
         duration = gr.Slider(minimum=95, maximum=180, step=5, value=95, label="Track Duration (seconds)")
-        ref_style = gr.Slider(minimum=0.0, maximum=1.0, step=0.1, value=1.0, label="Style Strength (0–1)")
-        sample_rate = gr.Dropdown(["24000", "44100"], value="24000", label="Output Sample Rate (Hz)")
-        model_select = gr.Textbox(value="ASLP-lab/DiffRhythm-1_2", label="Model Repo ID (e.g. ASLP-lab/DiffRhythm-1_2)")
+        steps = gr.Slider(minimum=8, maximum=100, step=4, value=32, label="Diffusion Steps")
+        cfg_strength = gr.Slider(minimum=0.1, maximum=10.0, step=0.1, value=4.0, label="CFG Strength")
+        batch_size = gr.Slider(minimum=1, maximum=4, step=1, value=1, label="Batch Size")
+        sample_rate = gr.Dropdown(["24000", "44100"], value="44100", label="Output Sample Rate (Hz)")
+        model_select = gr.Dropdown(choices=model_repo_options, value=model_repo_options[0], label="Model Repo ID")
         chunked = gr.Checkbox(label="Use Chunked Mode (Low VRAM)", value=True)
         fast_mode = gr.Checkbox(label="🚀 Fast Mode (demo only)", value=False)
 
@@ -158,16 +171,18 @@ with gr.Blocks() as demo:
         download1 = gr.File(label="⬇️ Download")
         status1 = gr.Textbox(label="Status")
         gen_btn1.click(
-            fn=lambda prompt, duration, ref_style, chunked, fast_mode, sr, repo_id: generate(
+            fn=lambda prompt, duration, chunked, fast_mode, sr, repo_id, steps, cfg_strength, batch_size: generate(
                 prompt_text=prompt,
                 duration=duration,
-                ref_style=ref_style,
                 chunked=chunked,
                 fast_mode=fast_mode,
                 sample_rate=int(sr),
-                repo_id=repo_id
+                repo_id=repo_id,
+                steps=steps,
+                cfg_strength=cfg_strength,
+                batch_size=batch_size,
             ),
-            inputs=[prompt_input, duration, ref_style, chunked, fast_mode, sample_rate, model_select],
+            inputs=[prompt_input, duration, chunked, fast_mode, sample_rate, model_select, steps, cfg_strength, batch_size],
             outputs=[out_audio1, download1, status1]
         )
 
@@ -178,16 +193,18 @@ with gr.Blocks() as demo:
         download2 = gr.File(label="⬇️ Download")
         status2 = gr.Textbox(label="Status")
         gen_btn2.click(
-            fn=lambda ref_audio, duration, ref_style, chunked, fast_mode, sr, repo_id: generate(
+            fn=lambda ref_audio, duration, chunked, fast_mode, sr, repo_id, steps, cfg_strength, batch_size: generate(
                 ref_audio_path=ref_audio,
                 duration=duration,
-                ref_style=ref_style,
                 chunked=chunked,
                 fast_mode=fast_mode,
                 sample_rate=int(sr),
-                repo_id=repo_id
+                repo_id=repo_id,
+                steps=steps,
+                cfg_strength=cfg_strength,
+                batch_size=batch_size,
             ),
-            inputs=[audio_input, duration, ref_style, chunked, fast_mode, sample_rate, model_select],
+            inputs=[audio_input, duration, chunked, fast_mode, sample_rate, model_select, steps, cfg_strength, batch_size],
             outputs=[out_audio2, download2, status2]
         )
 
