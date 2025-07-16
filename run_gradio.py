@@ -19,7 +19,6 @@ from infer_utils import (
     prepare_model,
 )
 
-# Inline inference function copied from infer.py
 @torch.inference_mode()
 def inference(
     cfm_model,
@@ -36,6 +35,7 @@ def inference(
 ):
     from einops import rearrange
 
+    print("[inference] Sampling latents...")
     latents, _ = cfm_model.sample(
         cond=cond,
         text=text,
@@ -50,15 +50,14 @@ def inference(
     )
 
     outputs = []
-    for latent in latents:
+    for i, latent in enumerate(latents):
+        print(f"[inference] Decoding latent {i}...")
         latent = latent.to(torch.float32)
-        latent = latent.transpose(1, 2)  # [b d t]
+        latent = latent.transpose(1, 2)
 
         output = decode_audio(latent, vae_model, chunked=chunked)
 
-        # Rearrange audio batch to a single sequence
         output = rearrange(output, "b d n -> d (b n)")
-        # Normalize and convert to int16
         output = (
             output.to(torch.float32)
             .div(torch.max(torch.abs(output)))
@@ -69,16 +68,18 @@ def inference(
         )
         outputs.append(output)
 
+    print("[inference] Done.")
     return outputs
 
-# Constants
 OUTPUT_DIR = "outputs"
 DUMMY_WAV = "static/test_output.wav"
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
 print("Loading models...")
+
+selected_repo = "ASLP-lab/DiffRhythm-1_2"
 device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
-cfm, tokenizer, muq, vae = prepare_model(max_frames=2048, device=device, repo_id="ASLP-lab/DiffRhythm-base")
+cfm, tokenizer, muq, vae = prepare_model(max_frames=2048, device=device, repo_id=selected_repo)
 print("Models loaded.")
 
 def simulate_fast_output(label="prompt"):
@@ -86,19 +87,28 @@ def simulate_fast_output(label="prompt"):
     shutil.copy(DUMMY_WAV, dummy_path)
     return dummy_path, dummy_path, "✅ Fast mode: demo file returned."
 
-def generate(prompt_text=None, ref_audio_path=None, duration=95, ref_style=1.0, chunked=False, fast_mode=False):
+def generate(prompt_text=None, ref_audio_path=None, duration=95, ref_style=1.0, chunked=False, fast_mode=False, sample_rate=24000, repo_id="ASLP-lab/DiffRhythm-1_2"):
+    global cfm, tokenizer, muq, vae, selected_repo
     if fast_mode:
         return simulate_fast_output("prompt" if prompt_text else "ref")
 
     try:
+        print("[generate] Starting generation...")
         start = time.time()
         max_frames = 2048 if duration == 95 else 6144
+
+        if repo_id != selected_repo:
+            print(f"[generate] Reloading models from {repo_id}")
+            cfm, tokenizer, muq, vae = prepare_model(max_frames=max_frames, device=device, repo_id=repo_id)
+            selected_repo = repo_id
 
         lrc_prompt, start_time = get_lrc_token(max_frames, "" if not prompt_text else prompt_text, tokenizer, device)
 
         if ref_audio_path:
+            print(f"[generate] Using reference audio: {ref_audio_path}")
             style_prompt = get_style_prompt(muq, ref_audio_path)
         else:
+            print(f"[generate] Using text prompt: {prompt_text}")
             style_prompt = get_style_prompt(muq, prompt=prompt_text)
 
         negative_style_prompt = get_negative_style_prompt(device)
@@ -120,20 +130,24 @@ def generate(prompt_text=None, ref_audio_path=None, duration=95, ref_style=1.0, 
 
         selected = random.sample(outputs, 1)[0]
         out_path = os.path.join(OUTPUT_DIR, f"generated_{int(time.time())}.wav")
-        torchaudio.save(out_path, selected, sample_rate=44100)
+        torchaudio.save(out_path, selected, sample_rate=sample_rate)
 
         elapsed = time.time() - start
+        print(f"[generate] Done in {elapsed:.2f} seconds.")
         return out_path, out_path, f"✅ Done in {elapsed:.1f} seconds."
 
     except Exception as e:
+        print(f"[generate] Error: {e}")
         return None, None, f"❌ Error: {str(e)}"
 
 with gr.Blocks() as demo:
-    gr.Markdown("# 🎵 DiffRhythm Music Generator (Direct Python Integration)")
+    gr.Markdown("# 🎵 DiffRhythm Music Generator (v1.2 default)")
 
     with gr.Row():
         duration = gr.Slider(minimum=95, maximum=180, step=5, value=95, label="Track Duration (seconds)")
         ref_style = gr.Slider(minimum=0.0, maximum=1.0, step=0.1, value=1.0, label="Style Strength (0–1)")
+        sample_rate = gr.Dropdown(["24000", "44100"], value="24000", label="Output Sample Rate (Hz)")
+        model_select = gr.Textbox(value="ASLP-lab/DiffRhythm-1_2", label="Model Repo ID (e.g. ASLP-lab/DiffRhythm-1_2)")
         chunked = gr.Checkbox(label="Use Chunked Mode (Low VRAM)", value=True)
         fast_mode = gr.Checkbox(label="🚀 Fast Mode (demo only)", value=False)
 
@@ -144,14 +158,16 @@ with gr.Blocks() as demo:
         download1 = gr.File(label="⬇️ Download")
         status1 = gr.Textbox(label="Status")
         gen_btn1.click(
-            fn=lambda prompt, duration, ref_style, chunked, fast_mode: generate(
+            fn=lambda prompt, duration, ref_style, chunked, fast_mode, sr, repo_id: generate(
                 prompt_text=prompt,
                 duration=duration,
                 ref_style=ref_style,
                 chunked=chunked,
-                fast_mode=fast_mode
+                fast_mode=fast_mode,
+                sample_rate=int(sr),
+                repo_id=repo_id
             ),
-            inputs=[prompt_input, duration, ref_style, chunked, fast_mode],
+            inputs=[prompt_input, duration, ref_style, chunked, fast_mode, sample_rate, model_select],
             outputs=[out_audio1, download1, status1]
         )
 
@@ -162,14 +178,16 @@ with gr.Blocks() as demo:
         download2 = gr.File(label="⬇️ Download")
         status2 = gr.Textbox(label="Status")
         gen_btn2.click(
-            fn=lambda ref_audio, duration, ref_style, chunked, fast_mode: generate(
+            fn=lambda ref_audio, duration, ref_style, chunked, fast_mode, sr, repo_id: generate(
                 ref_audio_path=ref_audio,
                 duration=duration,
                 ref_style=ref_style,
                 chunked=chunked,
-                fast_mode=fast_mode
+                fast_mode=fast_mode,
+                sample_rate=int(sr),
+                repo_id=repo_id
             ),
-            inputs=[audio_input, duration, ref_style, chunked, fast_mode],
+            inputs=[audio_input, duration, ref_style, chunked, fast_mode, sample_rate, model_select],
             outputs=[out_audio2, download2, status2]
         )
 
