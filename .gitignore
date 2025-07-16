@@ -1,6 +1,7 @@
 .cache/
 __pycache__/
 pretrained/
+venv/
 .vscode
 .idea
 .DS_Store

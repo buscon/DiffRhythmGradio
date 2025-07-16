@@ -1,0 +1,178 @@
+import gradio as gr
+import torch
+import torchaudio
+import os
+import time
+import random
+import shutil
+import sys
+
+# Add infer/ to the Python path to enable local import
+sys.path.insert(0, os.path.abspath("infer"))
+
+from infer_utils import (
+    decode_audio,
+    get_lrc_token,
+    get_negative_style_prompt,
+    get_reference_latent,
+    get_style_prompt,
+    prepare_model,
+)
+
+# Inline inference function copied from infer.py
+@torch.inference_mode()
+def inference(
+    cfm_model,
+    vae_model,
+    cond,
+    text,
+    duration,
+    style_prompt,
+    negative_style_prompt,
+    start_time,
+    pred_frames,
+    batch_infer_num,
+    chunked=False,
+):
+    from einops import rearrange
+
+    latents, _ = cfm_model.sample(
+        cond=cond,
+        text=text,
+        duration=duration,
+        style_prompt=style_prompt,
+        negative_style_prompt=negative_style_prompt,
+        steps=32,
+        cfg_strength=4.0,
+        start_time=start_time,
+        latent_pred_segments=pred_frames,
+        batch_infer_num=batch_infer_num
+    )
+
+    outputs = []
+    for latent in latents:
+        latent = latent.to(torch.float32)
+        latent = latent.transpose(1, 2)  # [b d t]
+
+        output = decode_audio(latent, vae_model, chunked=chunked)
+
+        # Rearrange audio batch to a single sequence
+        output = rearrange(output, "b d n -> d (b n)")
+        # Normalize and convert to int16
+        output = (
+            output.to(torch.float32)
+            .div(torch.max(torch.abs(output)))
+            .clamp(-1, 1)
+            .mul(32767)
+            .to(torch.int16)
+            .cpu()
+        )
+        outputs.append(output)
+
+    return outputs
+
+# Constants
+OUTPUT_DIR = "outputs"
+DUMMY_WAV = "static/test_output.wav"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+print("Loading models...")
+device = "cuda" if torch.cuda.is_available() else ("mps" if torch.backends.mps.is_available() else "cpu")
+cfm, tokenizer, muq, vae = prepare_model(max_frames=2048, device=device, repo_id="ASLP-lab/DiffRhythm-base")
+print("Models loaded.")
+
+def simulate_fast_output(label="prompt"):
+    dummy_path = os.path.join(OUTPUT_DIR, f"dummy_{label}.wav")
+    shutil.copy(DUMMY_WAV, dummy_path)
+    return dummy_path, dummy_path, "✅ Fast mode: demo file returned."
+
+def generate(prompt_text=None, ref_audio_path=None, duration=95, ref_style=1.0, chunked=False, fast_mode=False):
+    if fast_mode:
+        return simulate_fast_output("prompt" if prompt_text else "ref")
+
+    try:
+        start = time.time()
+        max_frames = 2048 if duration == 95 else 6144
+
+        lrc_prompt, start_time = get_lrc_token(max_frames, "" if not prompt_text else prompt_text, tokenizer, device)
+
+        if ref_audio_path:
+            style_prompt = get_style_prompt(muq, ref_audio_path)
+        else:
+            style_prompt = get_style_prompt(muq, prompt=prompt_text)
+
+        negative_style_prompt = get_negative_style_prompt(device)
+        latent_prompt, pred_frames = get_reference_latent(device, max_frames, False, None, None, vae)
+
+        outputs = inference(
+            cfm_model=cfm,
+            vae_model=vae,
+            cond=latent_prompt,
+            text=lrc_prompt,
+            duration=max_frames,
+            style_prompt=style_prompt,
+            negative_style_prompt=negative_style_prompt,
+            start_time=start_time,
+            pred_frames=pred_frames,
+            chunked=chunked,
+            batch_infer_num=1,
+        )
+
+        selected = random.sample(outputs, 1)[0]
+        out_path = os.path.join(OUTPUT_DIR, f"generated_{int(time.time())}.wav")
+        torchaudio.save(out_path, selected, sample_rate=44100)
+
+        elapsed = time.time() - start
+        return out_path, out_path, f"✅ Done in {elapsed:.1f} seconds."
+
+    except Exception as e:
+        return None, None, f"❌ Error: {str(e)}"
+
+with gr.Blocks() as demo:
+    gr.Markdown("# 🎵 DiffRhythm Music Generator (Direct Python Integration)")
+
+    with gr.Row():
+        duration = gr.Slider(minimum=95, maximum=180, step=5, value=95, label="Track Duration (seconds)")
+        ref_style = gr.Slider(minimum=0.0, maximum=1.0, step=0.1, value=1.0, label="Style Strength (0–1)")
+        chunked = gr.Checkbox(label="Use Chunked Mode (Low VRAM)", value=True)
+        fast_mode = gr.Checkbox(label="🚀 Fast Mode (demo only)", value=False)
+
+    with gr.Tab("Text Prompt"):
+        prompt_input = gr.Textbox(label="Prompt", placeholder="e.g. 'Ambient piano with lo-fi texture'")
+        gen_btn1 = gr.Button("Generate from Prompt")
+        out_audio1 = gr.Audio(label="🎵 Preview")
+        download1 = gr.File(label="⬇️ Download")
+        status1 = gr.Textbox(label="Status")
+        gen_btn1.click(
+            fn=lambda prompt, duration, ref_style, chunked, fast_mode: generate(
+                prompt_text=prompt,
+                duration=duration,
+                ref_style=ref_style,
+                chunked=chunked,
+                fast_mode=fast_mode
+            ),
+            inputs=[prompt_input, duration, ref_style, chunked, fast_mode],
+            outputs=[out_audio1, download1, status1]
+        )
+
+    with gr.Tab("Reference Audio"):
+        audio_input = gr.Audio(type="filepath", label="Upload Reference Audio")
+        gen_btn2 = gr.Button("Generate from Audio")
+        out_audio2 = gr.Audio(label="🎵 Preview")
+        download2 = gr.File(label="⬇️ Download")
+        status2 = gr.Textbox(label="Status")
+        gen_btn2.click(
+            fn=lambda ref_audio, duration, ref_style, chunked, fast_mode: generate(
+                ref_audio_path=ref_audio,
+                duration=duration,
+                ref_style=ref_style,
+                chunked=chunked,
+                fast_mode=fast_mode
+            ),
+            inputs=[audio_input, duration, ref_style, chunked, fast_mode],
+            outputs=[out_audio2, download2, status2]
+        )
+
+if __name__ == "__main__":
+    demo.launch(server_name="0.0.0.0", server_port=7860)
+
