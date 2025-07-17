@@ -1,0 +1,29 @@
+name: Build and Push Docker Image to GHCR
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR with personal token
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: buscon                # <- your GitHub username
+          password: ${{ secrets.GHCR_PAT }}  # <- your saved secret
+
+      - name: Build Docker image
+        run: |
+          docker build -t ghcr.io/buscon/DiffRhythmGradio:latest .
+
+      - name: Push Docker image
+        run: |
+          docker push ghcr.io/buscon/DiffRhythmGradio:latest
+
