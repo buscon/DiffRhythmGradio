@@ -2,10 +2,6 @@
 FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
 
 
-# Install matching PyTorch packages
-RUN pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu121
-
-
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     git ffmpeg libsndfile1-dev \
