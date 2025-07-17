@@ -1,9 +1,10 @@
-# Base image with PyTorch + CUDA 11.8
-FROM pytorch/pytorch:2.2.0-cuda11.8-cudnn8-runtime
+# Base image with PyTorch + CUDA 12.1
+FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
 
-# Optional: set non-root user
-# RUN useradd -m appuser && chown -R appuser /app
-# USER appuser
+
+# Install matching PyTorch packages
+RUN pip install torch==2.3.0 torchvision==0.18.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu121
+
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
