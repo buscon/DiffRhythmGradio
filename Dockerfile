@@ -15,8 +15,7 @@ COPY . /app
 
 # Install Python dependencies
 RUN pip install --upgrade pip && \
-    pip install -r requirements.txt \
-    pip install onnxruntime-gpu
+    pip install -r requirements.txt 
 
 # If you're using local encoders or models, ensure they are copied above
 # and your script points to the correct paths
