@@ -21,7 +21,7 @@ jobs:
 
       - name: Build Docker image
         run: |
-          docker build -t ghcr.io/buscon/DiffRhythmGradio:latest .
+          docker build -t ghcr.io/buscon/diffrhythmgradio:latest .
 
       - name: Push Docker image
         run: |
