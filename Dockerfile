@@ -4,7 +4,7 @@ FROM pytorch/pytorch:2.3.0-cuda12.1-cudnn8-runtime
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
-    git ffmpeg libsndfile1-dev \
+    git ffmpeg libsndfile1-dev espeak-ng \
     && apt-get clean
 
 # Set workdir
@@ -15,7 +15,8 @@ COPY . /app
 
 # Install Python dependencies
 RUN pip install --upgrade pip && \
-    pip install -r requirements.txt
+    pip install -r requirements.txt \
+    pip install onnxruntime-gpu
 
 # If you're using local encoders or models, ensure they are copied above
 # and your script points to the correct paths
